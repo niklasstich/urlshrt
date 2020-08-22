@@ -3,10 +3,13 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"github.com/gorilla/mux"
+	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
+	"io"
 	"io/ioutil"
 	"log"
 	"net/http"
@@ -16,11 +19,12 @@ import (
 )
 
 type Entry struct {
-	Key string
-	Url string
+	Shorthand string
+	Url       string
 }
 
 var indexhtml []byte
+var mongoclient *mongo.Client
 
 func homePage(w http.ResponseWriter, r *http.Request) {
 	_, err := w.Write(indexhtml)
@@ -31,44 +35,99 @@ func homePage(w http.ResponseWriter, r *http.Request) {
 
 func addEntry(w http.ResponseWriter, r *http.Request) {
 	contentType := r.Header.Get("Content-Type")
-	if contentType == "application/json" {
-		var entry Entry
-		err := json.NewDecoder(r.Body).Decode(&entry)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-		}
-		entry.Key = strings.TrimSpace(entry.Key)
-		entry.Url = strings.TrimSpace(entry.Url)
-		match, err := regexp.MatchString("[\\w\\-]+", entry.Key)
-		if entry.Key == "" || entry.Url == "" {
-			http.Error(w, "Key and Url can't be empty", http.StatusBadRequest)
-		} else if !match {
-			http.Error(w, "Key didn't match RegEx [\\w\\-]+", http.StatusBadRequest)
-		} else {
-			//check if key is already in database, if not insert and give back 200
-			cs := fmt.Sprintf("mongodb://%s:%s@%s:%s", os.Getenv("MONGO_USER"),
-				os.Getenv("MONGO_PASSWORD"), os.Getenv("MONGO_URI"), os.Getenv("MONGO_PORT"))
-			client, err := mongo.NewClient(options.Client().ApplyURI(cs))
-			if err != nil {
-				http.Error(w, "Internal Database Error", http.StatusInternalServerError)
-			}
-			ctx, cancel := context.WithCancel(r.Context())
-			defer cancel()
-			err = client.Connect(ctx)
-			if err != nil {
-				http.Error(w, "Internal Database Error", http.StatusInternalServerError)
-			}
-			collection := client.Database("urlshrt")
-		}
-	} else {
+	if contentType != "application/json" {
 		http.Error(w, "Only JSON data is accepted for POST", http.StatusUnsupportedMediaType)
 	}
+	r.Body = http.MaxBytesReader(w, r.Body, 1048576)
+	var entry Entry
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	err := dec.Decode(&entry)
+	if err != nil {
+		//differentiate between errors, because not all errors are user errors (400 or 500)
+		//borrowed from https://www.alexedwards.net/blog/how-to-properly-parse-a-json-request-body
+		var syntaxErr *json.SyntaxError
+		var unmarshalTypeErr *json.UnmarshalTypeError
 
+		switch {
+		case errors.As(err, &syntaxErr):
+			http.Error(w, "Bad JSON format", http.StatusBadRequest)
+
+		case errors.As(err, unmarshalTypeErr):
+			http.Error(w, "JSON type mismatch (should be string/string)", http.StatusBadRequest)
+
+		case strings.HasPrefix(err.Error(), "json: unknown field"):
+			http.Error(w, "JSON body has unexpected field", http.StatusBadRequest)
+
+		case errors.Is(err, io.EOF):
+			http.Error(w, "JSON body can't be empty", http.StatusBadRequest)
+
+		case err.Error() == "http: request body too large":
+			http.Error(w, "JSON body too large, 1MB at max", http.StatusBadRequest)
+
+		default:
+			log.Println(err.Error())
+			http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+		}
+
+		return
+	}
+	entry.Shorthand = strings.TrimSpace(entry.Shorthand)
+	entry.Url = strings.TrimSpace(entry.Url)
+	match, err := regexp.MatchString("[\\w\\-]+", entry.Shorthand)
+	if entry.Shorthand == "" || entry.Url == "" {
+		http.Error(w, "Shorthand and Url can't be empty.", http.StatusBadRequest)
+		return
+	} else if !match {
+		http.Error(w, "Shorthand didn't match RegEx [\\w\\-]+", http.StatusBadRequest)
+		return
+	}
+	//check if Shorthand is already in database, if not insert and give back 200
+	collection := mongoclient.Database("sh").Collection("redirects")
+
+	filter := bson.D{{Key: "shorthand", Value: entry.Shorthand}}
+	result := collection.FindOne(r.Context(), filter)
+	if result.Err() != mongo.ErrNoDocuments {
+		http.Error(w, "There already exists an entry with the specified Shorthand.", http.StatusBadRequest)
+		return
+	}
+	_, err = collection.InsertOne(r.Context(), entry)
+	if err != nil {
+		log.Fatal(err)
+	}
+	w.WriteHeader(http.StatusCreated)
+	_, _ = fmt.Fprintf(w, "<h1>The association for %s to %s has been created!</h1>\n<p>Click <a href=\"%s/%s\">here</a> to try out the redirect!", entry.Shorthand, entry.Url, os.Getenv("HOSTNAME"), entry.Shorthand)
 }
 
 func redirectByKey(w http.ResponseWriter, r *http.Request) {
-	key := mux.Vars(r)["key"]
-	//see if key is in database, 301
+	//Shorthand := mux.Vars(r)["Shorthand"]
+	//see if Shorthand is in database, 301
+}
+
+func initializeDBClient() {
+	cs := fmt.Sprintf("mongodb://%s:%s@%s:%s", os.Getenv("MONGO_USER"),
+		os.Getenv("MONGO_PASSWORD"), os.Getenv("MONGO_URI"), os.Getenv("MONGO_PORT"))
+	clientOptions := options.Client().ApplyURI(cs)
+	client, err := mongo.Connect(context.TODO(), clientOptions)
+	if err != nil {
+		log.Fatal(err)
+	}
+	err = client.Ping(context.TODO(), nil)
+	if err != nil {
+		log.Fatal(err)
+	}
+	mongoclient = client
+
+	collection := mongoclient.Database("sh").Collection("redirects")
+
+	index := mongo.IndexModel{
+		Keys:    bson.D{{"shorthand", 1}},
+		Options: options.Index().SetUnique(true),
+	}
+	_, err = collection.Indexes().CreateOne(context.TODO(), index)
+	if err != nil {
+		log.Fatal(err)
+	}
 }
 
 func main() {
@@ -77,11 +136,15 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	log.Println("Connecting to mongoDB...")
+	initializeDBClient()
+	defer mongoclient.Disconnect(context.TODO())
+	log.Println("Connected!")
 
 	router := mux.NewRouter()
 	router.HandleFunc("/", homePage).Methods("GET")
 	router.HandleFunc("/", addEntry).Methods("POST")
-	router.HandleFunc("/{key:[\\s\\-]+}", redirectByKey).Methods("GET")
+	router.HandleFunc("/{Shorthand:[\\s\\-]+}", redirectByKey).Methods("GET")
 
 	http.Handle("/", router)
 
