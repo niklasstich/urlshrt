@@ -22,15 +22,20 @@ type Entry struct {
 	Url       string
 }
 
+const DATABASE = "sh"
+const COLLECTION = "redirects"
+
 var mongoclient *mongo.Client
 
 func homePage(w http.ResponseWriter, _ *http.Request) {
 	indexhtml, err := Asset("../data/index.html")
 	if err != nil {
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
 		log.Fatal(err)
 	}
 	_, err = w.Write(indexhtml)
 	if err != nil {
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
 		log.Fatal(err)
 	}
 }
@@ -76,16 +81,26 @@ func addEntry(w http.ResponseWriter, r *http.Request) {
 	}
 	entry.Shorthand = strings.TrimSpace(entry.Shorthand)
 	entry.Url = strings.TrimSpace(entry.Url)
-	match, err := regexp.MatchString("[\\w\\-]+", entry.Shorthand)
 	if entry.Shorthand == "" || entry.Url == "" {
 		http.Error(w, "Shorthand and Url can't be empty.", http.StatusBadRequest)
 		return
-	} else if !match {
-		http.Error(w, "Shorthand didn't match RegEx [\\w\\-]+", http.StatusBadRequest)
+	}
+	if !(strings.HasPrefix(entry.Url, "http://") || strings.HasPrefix(entry.Url, "https://")) {
+		http.Error(w, "Please start the Url with http:// or https://", http.StatusBadRequest)
+		return
+	}
+	match, err := regexp.MatchString("^[\\d\\w]+$", entry.Shorthand)
+	if err != nil {
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		log.Fatal(err)
+	}
+	if !match {
+		msg := fmt.Sprintf("Shorthand %s didn't match RegEx ^[\\d\\w]+$", entry.Shorthand)
+		http.Error(w, msg, http.StatusBadRequest)
 		return
 	}
 	//check if Shorthand is already in database, if not insert and give back 200
-	collection := mongoclient.Database("sh").Collection("redirects")
+	collection := mongoclient.Database(DATABASE).Collection(COLLECTION)
 
 	filter := bson.D{{Key: "shorthand", Value: entry.Shorthand}}
 	result := collection.FindOne(r.Context(), filter)
@@ -95,6 +110,7 @@ func addEntry(w http.ResponseWriter, r *http.Request) {
 	}
 	_, err = collection.InsertOne(r.Context(), entry)
 	if err != nil {
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
 		log.Fatal(err)
 	}
 	w.WriteHeader(http.StatusCreated)
@@ -102,8 +118,34 @@ func addEntry(w http.ResponseWriter, r *http.Request) {
 }
 
 func redirectByKey(w http.ResponseWriter, r *http.Request) {
-	//Shorthand := mux.Vars(r)["Shorthand"]
-	//see if Shorthand is in database, 301
+	shorthand := mux.Vars(r)["shorthand"]
+	shorthand = strings.TrimSpace(shorthand)
+	match, err := regexp.MatchString("^[\\d\\w]+$", shorthand)
+	if err != nil {
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		log.Fatal(err)
+	}
+	if !match {
+		msg := fmt.Sprintf("Shorthand %s didn't match RegEx ^[\\d\\w]+$", shorthand)
+		http.Error(w, msg, http.StatusBadRequest)
+		return
+	}
+
+	collection := mongoclient.Database(DATABASE).Collection(COLLECTION)
+	filter := bson.D{{Key: "shorthand", Value: shorthand}}
+	result := collection.FindOne(r.Context(), filter)
+	if result.Err() == mongo.ErrNoDocuments {
+		msg := fmt.Sprintf("Shorthand %s is unknown", shorthand)
+		http.Error(w, msg, http.StatusBadRequest)
+		return
+	}
+	var entry Entry
+	err = result.Decode(&entry)
+	if err != nil {
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		log.Fatal(err)
+	}
+	http.Redirect(w, r, entry.Url, http.StatusPermanentRedirect)
 }
 
 func initializeDBClient() {
@@ -120,7 +162,7 @@ func initializeDBClient() {
 	}
 	mongoclient = client
 
-	collection := mongoclient.Database("sh").Collection("redirects")
+	collection := mongoclient.Database(DATABASE).Collection(COLLECTION)
 
 	index := mongo.IndexModel{
 		Keys:    bson.D{{"shorthand", 1}},
@@ -132,6 +174,10 @@ func initializeDBClient() {
 	}
 }
 
+func robotstxt(w http.ResponseWriter, r *http.Request) {
+	_, _ = fmt.Fprint(w, "User-agent: *\nDisallow: /")
+}
+
 func main() {
 	log.Println("Connecting to mongoDB...")
 	initializeDBClient()
@@ -141,7 +187,8 @@ func main() {
 	router := mux.NewRouter()
 	router.HandleFunc("/", homePage).Methods("GET")
 	router.HandleFunc("/", addEntry).Methods("POST")
-	router.HandleFunc("/{Shorthand:[\\s\\-]+}", redirectByKey).Methods("GET")
+	router.HandleFunc("/robots.txt", robotstxt)
+	router.HandleFunc("/{shorthand}", redirectByKey).Methods("GET")
 
 	http.Handle("/", router)
 
