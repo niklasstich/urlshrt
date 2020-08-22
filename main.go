@@ -10,7 +10,6 @@ import (
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 	"io"
-	"io/ioutil"
 	"log"
 	"net/http"
 	"os"
@@ -23,11 +22,14 @@ type Entry struct {
 	Url       string
 }
 
-var indexhtml []byte
 var mongoclient *mongo.Client
 
-func homePage(w http.ResponseWriter, r *http.Request) {
-	_, err := w.Write(indexhtml)
+func homePage(w http.ResponseWriter, _ *http.Request) {
+	indexhtml, err := Asset("../data/index.html")
+	if err != nil {
+		log.Fatal(err)
+	}
+	_, err = w.Write(indexhtml)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -131,11 +133,6 @@ func initializeDBClient() {
 }
 
 func main() {
-	var err error
-	indexhtml, err = ioutil.ReadFile("index.html")
-	if err != nil {
-		log.Fatal(err)
-	}
 	log.Println("Connecting to mongoDB...")
 	initializeDBClient()
 	defer mongoclient.Disconnect(context.TODO())
