@@ -1,12 +1,54 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+    <link rel="stylesheet" href="https://stackpath.bootstrapcdn.com/bootstrap/4.5.2/css/bootstrap.min.css" integrity="sha384-JcKb8q3iqJ61gNV9KGb8thSsNjpSL0n8PARn9HuZOnIxN0hoP+VmmDGMN5t9UJ0Z" crossorigin="anonymous">
     <meta charset="UTF-8">
-    <title>club.sh - URL shortener</title>
+    <title>sh.cluuub.xyz - URL shortener</title>
 </head>
 <body>
     <header>
-        <h1>club.sh - URL shortener</h1>
+        <h1 align="center">sh.cluuub.xyz- URL shortener</h1>
     </header>
+        <div class="container-fluid" align="center" id="form">
+            <label for="shorthand">Shorthand:</label>
+            <input type="text" id="shorthand" name="shorthand">
+            <label for="url">URL:</label>
+            <input type="text" id="url" name="url">
+            <button type="button" id="bsubmit" name="bsubmit" onclick="submit()">Submit</button>
+        </div>
 </body>
+<style>
+    h1 {
+        padding:15px;
+    }
+    .container {
+        padding:25px;
+    }
+</style>
+<script>
+    async function submit(){
+        const shorthand = document.getElementById("shorthand").value
+        const url = document.getElementById("url").value
+
+        const res = await fetch(document.URL, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                shorthand: shorthand,
+                url: url
+            })
+        });
+        const responseText = await res.text()
+        if(!res.ok){
+            alert(responseText);
+        } else {
+            document.querySelector('#form').innerHTML = responseText;
+        }
+    }
+</script>
+
 </html>

@@ -28,7 +28,7 @@ const COLLECTION = "redirects"
 var mongoclient *mongo.Client
 
 func homePage(w http.ResponseWriter, _ *http.Request) {
-	indexhtml, err := Asset("../data/index.html")
+	indexhtml, err := Asset("index.html")
 	if err != nil {
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
 		log.Fatal(err)
