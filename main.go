@@ -114,7 +114,12 @@ func addEntry(w http.ResponseWriter, r *http.Request) {
 		log.Fatal(err)
 	}
 	w.WriteHeader(http.StatusCreated)
-	_, _ = fmt.Fprintf(w, "<h1>The association for %s to %s has been created!</h1>\n<p>Click <a href=\"%s/%s\">here</a> to try out the redirect!", entry.Shorthand, entry.Url, os.Getenv("HOSTNAME"), entry.Shorthand)
+	msg := fmt.Sprintf("<h1>The association for %s to %s has been created!</h1>", entry.Shorthand, entry.Url)
+	hostname := os.Getenv("HOSTNAME")
+	if hostname != "" {
+		msg += fmt.Sprintf("\n<p>Click <a href=\"%s/%s\">here</a> to try out the redirect!", hostname, entry.Shorthand)
+	}
+	_, _ = fmt.Fprint(w, msg)
 }
 
 func redirectByKey(w http.ResponseWriter, r *http.Request) {
