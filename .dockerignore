@@ -1,0 +1,6 @@
+docker.env
+LICENSE
+README.md
+.idea/
+.run/
+out/
